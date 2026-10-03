@@ -3037,11 +3037,52 @@ function FirstSetupScreen({onStart}){
     // お客様へ渡すキー例：HINODE-0001 / AI-2026-0001 / KINKONKAN-0001
     return /^(HINODE|KINKONKAN|AI)-[0-9]{4}(-[0-9A-Z]{4})?$/.test(k);
   };
-  const start=()=>{
+  const start=async()=>{
     const key=normalizeLicense(licenseKey);
-    if(!officeName.trim()||!managerName.trim()||!key){setError("\u4E8B\u696D\u6240\u540D\u30FB\u7BA1\u7406\u8005\u540D\u30FB\u30E9\u30A4\u30BB\u30F3\u30B9\u30AD\u30FC\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044");return;}
-    if(!validLicense(key)){setError("\u30E9\u30A4\u30BB\u30F3\u30B9\u30AD\u30FC\u304C\u6B63\u3057\u304F\u3042\u308A\u307E\u305B\u3093\u3002\u4F8B\uFF1AHINODE-0001 / AI-2026-0001");return;}
-    onStart({id:null,email:"license:"+key,facility_name:officeName.trim(),manager_name:managerName.trim(),service_type:serviceType.trim()||"\u5C31\u52B4\u7D99\u7D9A\u652F\u63F4B\u578B",license_key:key,plan:"AI\u7248\u30FB\u30E9\u30A4\u30BB\u30F3\u30B9\u8A8D\u8A3C\u6E08"});
+    if(!officeName.trim()||!managerName.trim()||!key){setError("事業所名・管理者名・ライセンスキーを入力してください");return;}
+    if(!validLicense(key)){setError("ライセンスキーが正しくありません。例：HINODE-0001 / AI-2026-0001");return;}
+    setError("⭐ Supabaseで事業所を確認中...");
+    try{
+      // Supabaseでライセンスキーに対応する事業所を検索・または新規登録
+      let {data:existing,error:fetchErr}=await supabase.from("facilities")
+        .select("*").eq("license_key",key).single();
+      let facilityData;
+      if(existing&&existing.id){
+        // 既存の事業所データをそのまま使う（事業所名・管理者名をlocalStorageから持ってこない）
+        facilityData={
+          id:existing.id,
+          email:"license:"+key,
+          facility_name:existing.facility_name||officeName.trim(),
+          manager_name:existing.kanri_name||managerName.trim(),
+          service_type:existing.service_type||"就労継続支援B型",
+          license_key:key,
+          plan:existing.plan||"AI版・ライセンス認証済"
+        };
+      } else {
+        // 新規登録
+        const {data:inserted,error:insertErr}=await supabase.from("facilities").insert([{
+          license_key:key,
+          facility_name:officeName.trim(),
+          kanri_name:managerName.trim(),
+          service_type:serviceType.trim()||"就労継続支援B型",
+          plan:"AI版・ライセンス認証済",
+          created_at:new Date().toISOString()
+        }]).select().single();
+        if(insertErr||!inserted){
+          // Supabase登録失敗でもid:nullで動作継続
+          console.warn("Supabase登録エラー:",insertErr);
+          facilityData={id:null,email:"license:"+key,facility_name:officeName.trim(),manager_name:managerName.trim(),service_type:serviceType.trim()||"就労継続支援B型",license_key:key,plan:"AI版・ライセンス認証済"};
+        } else {
+          facilityData={id:inserted.id,email:"license:"+key,facility_name:inserted.facility_name,manager_name:inserted.kanri_name,service_type:inserted.service_type,license_key:key,plan:inserted.plan};
+        }
+      }
+      setError("");
+      onStart(facilityData);
+    }catch(e){
+      console.warn("Supabase接続エラー:",e);
+      // 通信エラー時はoffline mode（id:null）で起動
+      onStart({id:null,email:"license:"+key,facility_name:officeName.trim(),manager_name:managerName.trim(),service_type:serviceType.trim()||"就労継続支援B型",license_key:key,plan:"AI版・ライセンス認証済"});
+    }
   };
   return <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#E8F5E9,#F1F8E9)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
     <div style={{width:"100%",maxWidth:540,background:"#fff",borderRadius:14,boxShadow:"0 8px 28px rgba(0,0,0,0.18)",overflow:"hidden",border:"2px solid #C8E6C9"}}>
@@ -3120,31 +3161,42 @@ function App({facility,onLogout}){
 
   // ===== Supabaseからデータ初期読込 =====
   useEffect(()=>{
-    if(!facility||!facility.id||cloudLoaded) return;
+    if(!facility||cloudLoaded) return;
+    // facility.idがない場合はlicense_keyで検索
+    if(!facility.id && !facility.license_key) return;
     (async()=>{
+      // facilityIdがない場合はlicense_keyでSupabaseから取得
+      let facilityId = facility.id;
+      if(!facilityId && facility.license_key){
+        try{
+          const {data:fidRow}=await supabase.from("facilities").select("id").eq("license_key",facility.license_key).single();
+          if(fidRow&&fidRow.id) facilityId=fidRow.id;
+        }catch(e){}
+      }
+      if(!facilityId){setCloudLoaded(true);return;}
       try{
         // 利用者名簿を読込
         const {data:nameRow}=await supabase.from("support_data")
-          .select("content").eq("facility_id",facility.id).eq("user_name","__system__").eq("data_type","names").single();
+          .select("content").eq("facility_id",facilityId).eq("user_name","__system__").eq("data_type","names").single();
         if(nameRow&&nameRow.content&&nameRow.content.names){
           setNames(nameRow.content.names);
         }
         // 支援データを読込
         const {data:planRows}=await supabase.from("support_data")
-          .select("user_name,content").eq("facility_id",facility.id).eq("data_type","plan");
+          .select("user_name,content").eq("facility_id",facilityId).eq("data_type","plan");
         if(planRows&&planRows.length>0){
           const d={};planRows.forEach(r=>{d[r.user_name]=r.content;});
           setAllData(d);
         }
         // アセスメントデータを読込
         const {data:assessRows}=await supabase.from("support_data")
-          .select("user_name,content").eq("facility_id",facility.id).eq("data_type","assess");
+          .select("user_name,content").eq("facility_id",facilityId).eq("data_type","assess");
         if(assessRows&&assessRows.length>0){
           const a={};assessRows.forEach(r=>{a[r.user_name]=r.content;});
           setAllAssess(a);
         }
         // 事業所設定を読込
-        const {data:facData}=await supabase.from("facilities").select("*").eq("id",facility.id).single();
+        const {data:facData}=await supabase.from("facilities").select("*").eq("id",facilityId).single();
         if(facData){
           const newOffice={
             name:facData.facility_name||"",
@@ -3187,7 +3239,15 @@ function App({facility,onLogout}){
         localStorage.setItem(officeKey("office"),JSON.stringify(office));
       }catch(e){}
       // Supabaseへ保存（facilitiesテーブルの事業所設定を更新）
-      if(facility&&facility.id){
+      // fidがない場合はlicense_keyで検索してIDを補完
+      let fid = facility&&facility.id;
+      if(!fid && facility&&facility.license_key){
+        try{
+          const {data:frow}=await supabase.from("facilities").select("id").eq("license_key",facility.license_key).single();
+          if(frow&&frow.id) fid=frow.id;
+        }catch(e){}
+      }
+      if(fid){
         try{
           await supabase.from("facilities").update({
             facility_name:office.name||facility.facility_name,
@@ -3196,10 +3256,10 @@ function App({facility,onLogout}){
             kanri_name:office.kanri||"",
             place:office.place||"",
             shidoin:office.shidoin||""
-          }).eq("id",facility.id);
+          }).eq("id",fid);
           // 全利用者データをsupport_dataテーブルへ保存
           const upserts=Object.entries(allData).map(([userName,data])=>({
-            facility_id:facility.id,
+            facility_id:fid,
             user_name:userName,
             data_type:"plan",
             content:data,
@@ -3210,7 +3270,7 @@ function App({facility,onLogout}){
           }
           // アセスメントデータも保存
           const assessUpserts=Object.entries(allAssess).map(([userName,data])=>({
-            facility_id:facility.id,
+            facility_id:fid,
             user_name:userName,
             data_type:"assess",
             content:data,
@@ -3221,7 +3281,7 @@ function App({facility,onLogout}){
           }
           // 利用者名簿も保存
           await supabase.from("support_data").upsert([{
-            facility_id:facility.id,
+            facility_id:fid,
             user_name:"__system__",
             data_type:"names",
             content:{names},
