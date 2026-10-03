@@ -3003,121 +3003,209 @@ function CustomerComplaintTab(){
 }
 
 
-// ===== 初回設定ラッパー =====
-function AppRoot(){
-  const [facility,setFacility]=useState(()=>{
-    try{const saved=localStorage.getItem("kinkonkan_ai_facility");return saved?JSON.parse(saved):null;}catch(e){return null;}
-  });
-  if(!facility) return <FirstSetupScreen onStart={(data)=>{
-    try{
-      localStorage.setItem("kinkonkan_ai_facility",JSON.stringify(data));
-      const officeData={...OFFICE_DEFAULT,houjin:data.corporation_name||"",name:data.facility_name||"",svc:data.service_type||"\u5C31\u52B4\u7D99\u7D9A\u652F\u63F4B\u578B",kanriName:data.manager_name||"",kanri:data.manager_name||"",place:data.place||""};
-      localStorage.setItem(officeKey("office"),JSON.stringify(officeData));
-      OFFICE=officeData;
-    }catch(e){}
-    setFacility(data);
-  }}/>;
-  return <App facility={facility} onLogout={()=>{
-    if(window.confirm("\u521D\u56DE\u8A2D\u5B9A\u306B\u623B\u308A\u307E\u3059\u304B\uFF1F\n\u203B\u5165\u529B\u6E08\u307F\u306E\u5229\u7528\u8005\u30C7\u30FC\u30BF\u306F\u6B8B\u308A\u307E\u3059\u3002")){
-      try{localStorage.removeItem("kinkonkan_ai_facility");}catch(e){}
-      setFacility(null);
-    }
-  }}/>;
-}
+// ===== ログイン画面（メール/パスワード） =====
+function LoginScreen({onLogin}){
+  const [mode,setMode]=React.useState("login");
+  const [email,setEmail]=React.useState("");
+  const [password,setPassword]=React.useState("");
+  const [officeName,setOfficeName]=React.useState("");
+  const [managerName,setManagerName]=React.useState("");
+  const [serviceType,setServiceType]=React.useState("就労継続支援B型");
+  const [licenseKey,setLicenseKey]=React.useState("");
+  const [error,setError]=React.useState("");
+  const [msg,setMsg]=React.useState("");
+  const [loading,setLoading]=React.useState(false);
 
-function FirstSetupScreen({onStart}){
-  const [officeName,setOfficeName]=useState("");
-  const [managerName,setManagerName]=useState("");
-  const [serviceType,setServiceType]=useState("\u5C31\u52B4\u7D99\u7D9A\u652F\u63F4B\u578B");
-  const [licenseKey,setLicenseKey]=useState("");
-  const [error,setError]=useState("");
   const normalizeLicense=(v)=>(v||"").trim().toUpperCase().replace(/\s+/g,"");
-  const validLicense=(key)=>{
-    const k=normalizeLicense(key);
-    // お客様へ渡すキー例：HINODE-0001 / AI-2026-0001 / KINKONKAN-0001
-    return /^(HINODE|KINKONKAN|AI)-[0-9]{4}(-[0-9A-Z]{4})?$/.test(k);
-  };
-  const start=async()=>{
-    const key=normalizeLicense(licenseKey);
-    if(!officeName.trim()||!managerName.trim()||!key){setError("事業所名・管理者名・ライセンスキーを入力してください");return;}
-    if(!validLicense(key)){setError("ライセンスキーが正しくありません。例：HINODE-0001 / AI-2026-0001");return;}
-    setError("⭐ Supabaseで事業所を確認中...");
+  const validLicense=(key)=>/^(HINODE|KINKONKAN|AI)-[0-9]{4}(-[0-9A-Z]{4})?$/.test(key);
+
+  const handleLogin=async()=>{
+    if(!email.trim()||!password){setError("メールアドレスとパスワードを入力してください");return;}
+    setLoading(true);setError("");setMsg("");
     try{
-      // Supabaseでライセンスキーに対応する事業所を検索・または新規登録
-      let {data:existing,error:fetchErr}=await supabase.from("facilities")
-        .select("*").eq("license_key",key).single();
-      let facilityData;
-      if(existing&&existing.id){
-        // 既存の事業所データをそのまま使う（事業所名・管理者名をlocalStorageから持ってこない）
-        facilityData={
-          id:existing.id,
-          email:"license:"+key,
-          facility_name:existing.facility_name||officeName.trim(),
-          manager_name:existing.kanri_name||managerName.trim(),
-          service_type:existing.service_type||"就労継続支援B型",
-          license_key:key,
-          plan:existing.plan||"AI版・ライセンス認証済"
-        };
+      const {data,error:e}=await supabase.auth.signInWithPassword({email:email.trim(),password});
+      if(e){setError("ログイン失敗："+e.message);setLoading(false);return;}
+      const userId=data.user.id;
+      const {data:fac}=await supabase.from("facilities").select("*").eq("auth_user_id",userId).single();
+      if(fac&&fac.id){
+        onLogin({id:fac.id,email:email.trim(),facility_name:fac.facility_name,manager_name:fac.kanri_name,service_type:fac.service_type,license_key:fac.license_key||"",plan:fac.plan||"メール認証済"});
       } else {
-        // 新規登録
-        const {data:inserted,error:insertErr}=await supabase.from("facilities").insert([{
-          license_key:key,
-          facility_name:officeName.trim(),
-          kanri_name:managerName.trim(),
-          service_type:serviceType.trim()||"就労継続支援B型",
-          plan:"AI版・ライセンス認証済",
-          created_at:new Date().toISOString()
-        }]).select().single();
-        if(insertErr||!inserted){
-          // Supabase登録失敗でもid:nullで動作継続
-          console.warn("Supabase登録エラー:",insertErr);
-          facilityData={id:null,email:"license:"+key,facility_name:officeName.trim(),manager_name:managerName.trim(),service_type:serviceType.trim()||"就労継続支援B型",license_key:key,plan:"AI版・ライセンス認証済"};
+        const {data:fac2}=await supabase.from("facilities").select("*").eq("email",email.trim()).single();
+        if(fac2&&fac2.id){
+          await supabase.from("facilities").update({auth_user_id:userId}).eq("id",fac2.id);
+          onLogin({id:fac2.id,email:email.trim(),facility_name:fac2.facility_name,manager_name:fac2.kanri_name,service_type:fac2.service_type,license_key:fac2.license_key||"",plan:fac2.plan||"メール認証済"});
         } else {
-          facilityData={id:inserted.id,email:"license:"+key,facility_name:inserted.facility_name,manager_name:inserted.kanri_name,service_type:inserted.service_type,license_key:key,plan:inserted.plan};
+          setError("事業所情報が見つかりません。新規登録タブから登録してください。");
+          setMode("signup");
         }
       }
-      setError("");
-      onStart(facilityData);
-    }catch(e){
-      console.warn("Supabase接続エラー:",e);
-      // 通信エラー時はoffline mode（id:null）で起動
-      onStart({id:null,email:"license:"+key,facility_name:officeName.trim(),manager_name:managerName.trim(),service_type:serviceType.trim()||"就労継続支援B型",license_key:key,plan:"AI版・ライセンス認証済"});
-    }
+    }catch(e2){setError("通信エラー："+e2.message);}
+    setLoading(false);
   };
+
+  const handleSignup=async()=>{
+    const key=normalizeLicense(licenseKey);
+    if(!email.trim()||!password||!officeName.trim()||!managerName.trim()||!key){
+      setError("全項目を入力してください");return;
+    }
+    if(password.length<6){setError("パスワードは6文字以上にしてください");return;}
+    if(!validLicense(key)){setError("ライセンスキーが正しくありません。例：HINODE-0001");return;}
+    setLoading(true);setError("");setMsg("");
+    try{
+      const {data:authData,error:authErr}=await supabase.auth.signUp({email:email.trim(),password});
+      if(authErr){setError("登録失敗："+authErr.message);setLoading(false);return;}
+      const userId=authData.user&&authData.user.id;
+      let facilityData;
+      const {data:existing}=await supabase.from("facilities").select("*").eq("license_key",key).single();
+      if(existing&&existing.id){
+        await supabase.from("facilities").update({auth_user_id:userId,email:email.trim()}).eq("id",existing.id);
+        facilityData={id:existing.id,email:email.trim(),facility_name:existing.facility_name||officeName.trim(),manager_name:existing.kanri_name||managerName.trim(),service_type:existing.service_type||"就労継続支援B型",license_key:key,plan:existing.plan||"メール認証済"};
+      } else {
+        const {data:inserted,error:insertErr}=await supabase.from("facilities").insert([{
+          license_key:key,facility_name:officeName.trim(),kanri_name:managerName.trim(),
+          service_type:serviceType||"就労継続支援B型",plan:"メール認証済",
+          email:email.trim(),auth_user_id:userId,created_at:new Date().toISOString()
+        }]).select().single();
+        if(insertErr||!inserted){
+          facilityData={id:null,email:email.trim(),facility_name:officeName.trim(),manager_name:managerName.trim(),service_type:serviceType,license_key:key,plan:"メール認証済"};
+        } else {
+          facilityData={id:inserted.id,email:email.trim(),facility_name:inserted.facility_name,manager_name:inserted.kanri_name,service_type:inserted.service_type,license_key:key,plan:inserted.plan};
+        }
+      }
+      if(authData.user&&!authData.user.email_confirmed_at){
+        setMsg("✅ 登録完了！確認メールを送信しました。メール確認後ログインしてください。");
+        setLoading(false);setMode("login");return;
+      }
+      setError("");
+      onLogin(facilityData);
+    }catch(e2){setError("通信エラー："+e2.message);}
+    setLoading(false);
+  };
+
+  const inp={width:"100%",padding:"10px 12px",fontSize:14,border:"1px solid #A5D6A7",borderRadius:6,boxSizing:"border-box"};
+  const lbl={fontSize:12,fontWeight:"bold",color:"#1B5E20",marginBottom:4,display:"block"};
+
   return <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#E8F5E9,#F1F8E9)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
-    <div style={{width:"100%",maxWidth:540,background:"#fff",borderRadius:14,boxShadow:"0 8px 28px rgba(0,0,0,0.18)",overflow:"hidden",border:"2px solid #C8E6C9"}}>
+    <div style={{width:"100%",maxWidth:480,background:"#fff",borderRadius:14,boxShadow:"0 8px 28px rgba(0,0,0,0.18)",overflow:"hidden",border:"2px solid #C8E6C9"}}>
       <div style={{background:"#1B5E20",color:"#fff",padding:"22px 28px",textAlign:"center"}}>
         <div style={{fontSize:24,fontWeight:"bold",marginBottom:4}}>🌿 きんこんかん AI支援記録</div>
-        <div style={{fontSize:13,opacity:.9}}>AI版・ライセンス認証</div>
+        <div style={{fontSize:13,opacity:.9}}>{mode==="login"?"ログイン":"新規アカウント登録"}</div>
       </div>
-      <div style={{padding:"24px 30px",display:"flex",flexDirection:"column",gap:14}}>
-        <div style={{background:"#FFFDE7",border:"1px solid #F9A825",borderRadius:6,padding:"10px 12px",fontSize:12,lineHeight:1.7,color:"#5D4037"}}>
-          最初に <b>事業所名</b>・<b>管理者名</b>・<b>ライセンスキー</b> を入力してください。認証後、帳票・印刷・AI生成文に自動反映されます。
-        </div>
+      <div style={{display:"flex",borderBottom:"1px solid #E8F5E9"}}>
+        <button onClick={()=>{setMode("login");setError("");setMsg("");}} style={{flex:1,padding:"11px 0",background:mode==="login"?"#E8F5E9":"#fff",border:"none",cursor:"pointer",fontWeight:mode==="login"?"bold":"normal",color:mode==="login"?"#1B5E20":"#888",fontSize:13}}>🔑 ログイン</button>
+        <button onClick={()=>{setMode("signup");setError("");setMsg("");}} style={{flex:1,padding:"11px 0",background:mode==="signup"?"#E8F5E9":"#fff",border:"none",cursor:"pointer",fontWeight:mode==="signup"?"bold":"normal",color:mode==="signup"?"#1B5E20":"#888",fontSize:13}}>✏️ 新規登録</button>
+      </div>
+      <div style={{padding:"24px 28px",display:"flex",flexDirection:"column",gap:14}}>
         {error&&<div style={{background:"#FFEBEE",border:"1px solid #EF9A9A",borderRadius:5,padding:"9px 12px",fontSize:12,color:"#C62828"}}>{error}</div>}
+        {msg&&<div style={{background:"#E8F5E9",border:"1px solid #A5D6A7",borderRadius:5,padding:"9px 12px",fontSize:12,color:"#1B5E20"}}>{msg}</div>}
         <div>
-          <div style={{fontSize:12,fontWeight:"bold",color:"#1B5E20",marginBottom:4}}>事業所名 <span style={{color:"#C62828"}}>必須</span></div>
-          <input value={officeName} onChange={e=>setOfficeName(e.target.value)} placeholder="\u4F8B\uFF1A\u65E5\u4E4B\u51FA\u6CBB\u7642\u9662" style={{width:"100%",padding:"10px 12px",fontSize:14,border:"1px solid #A5D6A7",borderRadius:6}}/>
+          <label style={lbl}>メールアドレス <span style={{color:"#C62828"}}>必須</span></label>
+          <input value={email} onChange={e=>setEmail(e.target.value)} type="email" placeholder="例：info@example.com" style={inp}/>
         </div>
         <div>
-          <div style={{fontSize:12,fontWeight:"bold",color:"#1B5E20",marginBottom:4}}>管理者名 <span style={{color:"#C62828"}}>必須</span></div>
-          <input value={managerName} onChange={e=>setManagerName(e.target.value)} placeholder="\u4F8B\uFF1A\u6589\u85E4 \u79C0\u6A39" style={{width:"100%",padding:"10px 12px",fontSize:14,border:"1px solid #A5D6A7",borderRadius:6}}/>
+          <label style={lbl}>パスワード <span style={{color:"#C62828"}}>必須</span>{mode==="signup"&&<span style={{fontWeight:"normal",color:"#888"}}> （6文字以上）</span>}</label>
+          <input value={password} onChange={e=>setPassword(e.target.value)} type="password" placeholder="パスワードを入力" style={inp}
+            onKeyDown={e=>{if(e.key==="Enter"&&mode==="login")handleLogin();}}/>
         </div>
-        <div>
-          <div style={{fontSize:12,fontWeight:"bold",color:"#1B5E20",marginBottom:4}}>ライセンスキー <span style={{color:"#C62828"}}>必須</span></div>
-          <input value={licenseKey} onChange={e=>setLicenseKey(e.target.value.toUpperCase())} placeholder="\u4F8B\uFF1AHINODE-0001" style={{width:"100%",padding:"10px 12px",fontSize:14,border:"1px solid #F9A825",borderRadius:6,letterSpacing:1}}/>
-          <div style={{fontSize:10,color:"#888",marginTop:4}}>入力例：HINODE-0001 / KINKONKAN-0001 / AI-2026-0001</div>
-        </div>
-        <div>
-          <div style={{fontSize:12,fontWeight:"bold",color:"#1B5E20",marginBottom:4}}>サービス種別</div>
-          <input value={serviceType} onChange={e=>setServiceType(e.target.value)} style={{width:"100%",padding:"10px 12px",fontSize:14,border:"1px solid #A5D6A7",borderRadius:6}}/>
-        </div>
-        <button onClick={start} style={{marginTop:8,width:"100%",padding:"13px 0",background:"#388E3C",color:"#fff",border:"none",borderRadius:8,cursor:"pointer",fontSize:15,fontWeight:"bold"}}>🔐 認証して開始する</button>
+        {mode==="signup"&&<>
+          <div style={{height:1,background:"#E8F5E9"}}/>
+          <div>
+            <label style={lbl}>事業所名 <span style={{color:"#C62828"}}>必須</span></label>
+            <input value={officeName} onChange={e=>setOfficeName(e.target.value)} placeholder="例：日之出治療院" style={inp}/>
+          </div>
+          <div>
+            <label style={lbl}>管理者名 <span style={{color:"#C62828"}}>必須</span></label>
+            <input value={managerName} onChange={e=>setManagerName(e.target.value)} placeholder="例：斎藤 秀樹" style={inp}/>
+          </div>
+          <div>
+            <label style={lbl}>ライセンスキー <span style={{color:"#C62828"}}>必須</span></label>
+            <input value={licenseKey} onChange={e=>setLicenseKey(e.target.value.toUpperCase())} placeholder="例：HINODE-0001" style={{...inp,border:"1px solid #F9A825",letterSpacing:1}}/>
+            <div style={{fontSize:10,color:"#888",marginTop:3}}>入力例：HINODE-0001 / KINKONKAN-0001 / AI-2026-0001</div>
+          </div>
+          <div>
+            <label style={lbl}>サービス種別</label>
+            <input value={serviceType} onChange={e=>setServiceType(e.target.value)} style={inp}/>
+          </div>
+        </>}
+        <button onClick={mode==="login"?handleLogin:handleSignup} disabled={loading}
+          style={{marginTop:4,width:"100%",padding:"13px 0",background:loading?"#ccc":"#388E3C",color:"#fff",border:"none",borderRadius:8,cursor:loading?"not-allowed":"pointer",fontSize:15,fontWeight:"bold"}}>
+          {loading?"⏳ 処理中...":(mode==="login"?"🔑 ログイン":"✅ 登録して開始")}
+        </button>
         <div style={{fontSize:10,color:"#888",textAlign:"center",lineHeight:1.6}}>Copyright © Hideki Saitou / きんこんかん AI支援記録</div>
       </div>
     </div>
   </div>;
 }
+
+// ===== 初回設定ラッパー =====
+function AppRoot(){
+  const [facility,setFacility]=React.useState(null);
+  const [authChecked,setAuthChecked]=React.useState(false);
+
+  React.useEffect(()=>{
+    (async()=>{
+      try{
+        const {data:{session}}=await supabase.auth.getSession();
+        if(session&&session.user){
+          const userId=session.user.id;
+          const email=session.user.email||"";
+          let fac=null;
+          const {data:f1}=await supabase.from("facilities").select("*").eq("auth_user_id",userId).single();
+          if(f1&&f1.id){fac=f1;}
+          else{
+            const {data:f2}=await supabase.from("facilities").select("*").eq("email",email).single();
+            if(f2&&f2.id){
+              await supabase.from("facilities").update({auth_user_id:userId}).eq("id",f2.id);
+              fac=f2;
+            }
+          }
+          if(fac){
+            const d={id:fac.id,email:email,facility_name:fac.facility_name,manager_name:fac.kanri_name,service_type:fac.service_type,license_key:fac.license_key||"",plan:fac.plan||"メール認証済"};
+            try{
+              localStorage.setItem("kinkonkan_ai_facility",JSON.stringify(d));
+              const od={...OFFICE_DEFAULT,houjin:"",name:fac.facility_name||"",svc:fac.service_type||"就労継続支援B型",kanriName:fac.kanri_name||"",kanri:fac.kanri_name||"",place:""};
+              localStorage.setItem(officeKey("office"),JSON.stringify(od));OFFICE=od;
+            }catch(e2){}
+            setFacility(d);setAuthChecked(true);return;
+          }
+        }
+      }catch(e){console.warn("Auth check:",e);}
+      try{
+        const saved=localStorage.getItem("kinkonkan_ai_facility");
+        if(saved){const d=JSON.parse(saved);if(d&&(d.id||d.license_key)){setFacility(d);setAuthChecked(true);return;}}
+      }catch(e){}
+      setAuthChecked(true);
+    })();
+  },[]);
+
+  const handleLogin=(data)=>{
+    try{
+      localStorage.setItem("kinkonkan_ai_facility",JSON.stringify(data));
+      const od={...OFFICE_DEFAULT,houjin:"",name:data.facility_name||"",svc:data.service_type||"就労継続支援B型",kanriName:data.manager_name||"",kanri:data.manager_name||"",place:""};
+      localStorage.setItem(officeKey("office"),JSON.stringify(od));OFFICE=od;
+    }catch(e){}
+    setFacility(data);
+  };
+
+  const handleLogout=async()=>{
+    if(!window.confirm("ログアウトしますか？\n※入力済みのデータはクラウドに保存されています。")){return;}
+    try{await supabase.auth.signOut();}catch(e){}
+    try{localStorage.removeItem("kinkonkan_ai_facility");}catch(e){}
+    setFacility(null);
+  };
+
+  if(!authChecked) return <div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#E8F5E9",fontFamily:"Meiryo,sans-serif"}}>
+    <div style={{textAlign:"center",color:"#1B5E20"}}>
+      <div style={{fontSize:32,marginBottom:12}}>🌿</div>
+      <div style={{fontSize:16,fontWeight:"bold"}}>きんこんかん AI支援記録</div>
+      <div style={{fontSize:13,marginTop:8,opacity:.7}}>⏳ 起動中...</div>
+    </div>
+  </div>;
+
+  if(!facility) return <LoginScreen onLogin={handleLogin}/>;
+  return <App facility={facility} onLogout={handleLogout}/>;
+}
+
 
 function App({facility,onLogout}){
   // 複数事業所：現在の事業所ID管理
